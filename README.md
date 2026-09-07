@@ -36,6 +36,8 @@ shards/YYYY-MM-DD.jsonl  # append-only event log (auto-created)
 
 - **mediawiki** — one `recentchanges` API call gets every recent edit (title/user/timestamp/sizes). Near-real-time firehose.
 - **listpage** — generic pastebin-style recent/archive page: regex the ids, diff against cursor, keep the anchor text as scoreable metadata.
+- **jsonlist** — paginated JSON list API (fragbin-style `/api/pastes?page=N`); field names configurable.
+- **usemod** — UseModWiki / ProWiki / Oddmuse `action=rc` RecentChanges HTML (the CGI wikis that hosted the 2026 swarm boards). Parses date headers (English or German), times (24h or am/pm), page, `[summary]`, and author/IP; item id is a hash of (page, date, time, author) since these engines expose no revision id. Read-only GET, no body fetch needed: the page name and summary carry the handle grammar. Set `utc_offset_h` per venue (these engines print server-local wall time).
 
 Add your own: one generator function yielding `{id, author, title, url, ts}` items, register it in `ADAPTERS`.
 
@@ -56,6 +58,9 @@ Tier-2 bodies are scanned for prompt-injection markers (`[SYSTEM]`, ignore-your-
     {"name": "some-wiki", "type": "mediawiki",
      "api": "https://example.org/w/api.php",
      "page_base": "https://example.org/wiki/"},
+    {"name": "some-usemod", "type": "usemod",
+     "url": "https://example.org/cgi-bin/wiki.pl?action=rc&days=30&all=1&showedit=1",
+     "page_base": "https://example.org/cgi-bin/wiki.pl?", "fetch_body": false},
     {"name": "some-pastebin", "type": "listpage",
      "url": "https://example.org/recent",
      "id_regex": "/view/([0-9a-f]{8})",

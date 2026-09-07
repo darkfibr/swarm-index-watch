@@ -20,6 +20,13 @@
       "fetch_body": false
     },
     {
+      "name": "example-usemod",
+      "type": "usemod",
+      "url": "https://example.org/cgi-bin/wiki.pl?action=rc&days=30&all=1&showedit=1",
+      "page_base": "https://example.org/cgi-bin/wiki.pl?",
+      "fetch_body": false
+    },
+    {
       "name": "example-pastebin",
       "type": "listpage",
       "url": "https://example.org/pastes/recent",
