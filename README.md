@@ -38,6 +38,11 @@ shards/YYYY-MM-DD.jsonl  # append-only event log (auto-created)
 
 Add your own: one generator function yielding `{id, author, title, url, ts}` items, register it in `ADAPTERS`.
 
+
+## Injection tripwire
+
+Tier-2 bodies are scanned for prompt-injection markers (`[SYSTEM]`, ignore-your-instructions, maintenance-mode lures, etc.). Matches are kept as evidence AND flagged (`injection_flag` + matched markers). Downstream readers must treat flagged bodies as untrusted input, never as instructions. Added after a live injection paste was found in the wild targeting exactly this kind of tooling: any watcher that fetches bodies is a reader, and readers are targets.
+
 ## Config
 
 ```json
