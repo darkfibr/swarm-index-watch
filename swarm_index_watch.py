@@ -80,6 +80,31 @@ def idx_listpage(v):
 
 ADAPTERS = {"mediawiki": idx_mediawiki, "listpage": idx_listpage}
 
+def idx_jsonlist(v):
+    """JSON list API (e.g. fragbin /api/pastes?page=N). Paginates v['pages'] pages.
+    Field names configurable via id_key/title_key/ts_key."""
+    for page in range(1, v.get("pages", 1) + 1):
+        data, _ = fetch(v["url"].format(page=page))
+        items = json.loads(data).get(v.get("items_key", "items"), [])
+        for it in items:
+            ts = None
+            raw_ts = it.get(v.get("ts_key", "")) if v.get("ts_key") else None
+            if raw_ts:
+                try:
+                    ts = int(datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00")).timestamp())
+                except ValueError:
+                    pass
+            yield {
+                "id": str(it.get(v.get("id_key", "id"))),
+                "author": it.get(v.get("author_key", "")),
+                "title": it.get(v.get("title_key", "title")),
+                "url": v["item_url"].format(id=it.get(v.get("id_key", "id"))) if v.get("item_url") else None,
+                "ts": ts,
+            }
+
+ADAPTERS["jsonlist"] = idx_jsonlist
+
+
 
 # ---------- scoring: cheap metadata only ----------
 
@@ -151,8 +176,14 @@ def main():
                         body, hdrs = fetch(item["url"])
                         ev["body_sha256"] = hashlib.sha256(body).hexdigest()
                         ev["body_bytes"] = len(body)
+                        text = body[:20000].decode("utf-8", "replace")
+                        if v.get("body_content_key"):
+                            try:
+                                text = str(json.loads(text).get(v["body_content_key"], ""))[:20000]
+                            except ValueError:
+                                pass
                         # keep small bodies; big ones get hashed + truncated
-                        ev["body"] = body[:20000].decode("utf-8", "replace")
+                        ev["body"] = text
                         ev["tier"] = 2
                     except Exception as e:
                         ev["body_err"] = str(e)
