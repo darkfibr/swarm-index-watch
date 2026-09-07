@@ -20,29 +20,51 @@ Cron (15-min ticks, self-overlap-safe):
 Stdlib only. No deps. GPLvwhatever, take it.
 """
 
-import argparse, hashlib, json, os, re, sys, time, urllib.request, urllib.parse
+import argparse, hashlib, json, os, re, sys, time, urllib.error, urllib.request, urllib.parse
 from datetime import datetime, timezone
 
 UA = {"User-Agent": "index-watch/1.0 (research; contact: you)"}
 EPOCH_RE = re.compile(r"\b(?:ts=)?(1[6-9]\d{8})\b")  # plausible 2026+ epoch ints
 
 
-def fetch(url, timeout=20):
-    req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read(), dict(r.headers)
+def fetch(url, timeout=20, vkey=None, state=None):
+    """GET with conditional validators. Returns (body, headers); body is None
+    on 304 Not Modified. Validators persist in state['validators'][vkey or url].
+    Venues without validators (cgi wikis) cost a real GET, but a small one."""
+    hdrs = dict(UA)
+    if vkey and state:
+        prev = state.get("validators", {}).get(vkey)
+        if prev:
+            if prev.get("etag"):
+                hdrs["If-None-Match"] = prev["etag"]
+            if prev.get("lastmod"):
+                hdrs["If-Modified-Since"] = prev["lastmod"]
+    req = urllib.request.Request(url, headers=hdrs)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body, h = r.read(), dict(r.headers)
+            if vkey and state:
+                state.setdefault("validators", {})[vkey] = {
+                    "etag": h.get("ETag"), "lastmod": h.get("Last-Modified")}
+            return body, h
+    except urllib.error.HTTPError as e:
+        if e.code == 304:
+            return None, dict(e.headers)
+        raise
 
 
 # ---------- venue adapters: each yields candidate items from the CHEAP index ----------
 # item = {"id": str, "author": str|None, "title": str|None, "url": str|None, "ts": epoch|None}
 
-def idx_mediawiki(v):
+def idx_mediawiki(v, state=None):
     """MediaWiki recentchanges firehose: one call, every recent edit."""
     q = urllib.parse.urlencode({
         "action": "query", "list": "recentchanges", "format": "json",
         "rclimit": v.get("limit", 100), "rcprop": "title|user|timestamp|sizes|ids",
     })
-    data, _ = fetch(f"{v['api']}?{q}")
+    data, _ = fetch(f"{v['api']}?{q}", vkey="idx:" + v["name"], state=state)
+    if data is None:
+        return
     for rc in json.loads(data).get("query", {}).get("recentchanges", []):
         yield {
             "id": f"rc{rc['revid']}",
@@ -53,12 +75,13 @@ def idx_mediawiki(v):
                 rc["timestamp"].replace("Z", "+00:00")).timestamp()),
         }
 
-
-def idx_listpage(v):
+def idx_listpage(v, state=None):
     """Generic pastebin-style recent/archive list: hash the list, diff the ids.
     The anchor's own line is kept as the item's text so grammar/epoch scoring
     works without a body fetch."""
-    data, _ = fetch(v["url"])
+    data, _ = fetch(v["url"], vkey="idx:" + v["name"], state=state)
+    if data is None:
+        return
     text = data.decode("utf-8", "replace")
     seen = set()
     for line in text.splitlines():
@@ -80,11 +103,14 @@ def idx_listpage(v):
 
 ADAPTERS = {"mediawiki": idx_mediawiki, "listpage": idx_listpage}
 
-def idx_jsonlist(v):
+def idx_jsonlist(v, state=None):
     """JSON list API (e.g. fragbin /api/pastes?page=N). Paginates v['pages'] pages.
     Field names configurable via id_key/title_key/ts_key."""
     for page in range(1, v.get("pages", 1) + 1):
-        data, _ = fetch(v["url"].format(page=page))
+        data, _ = fetch(v["url"].format(page=page),
+                        vkey="idx:%s:p%d" % (v["name"], page), state=state)
+        if data is None:
+            continue
         items = json.loads(data).get(v.get("items_key", "items"), [])
         for it in items:
             ts = None
@@ -170,7 +196,7 @@ def main():
             cursor = state["venues"].setdefault(name, {"seen": []})
             seen = set(cursor["seen"])
             try:
-                items = list(ADAPTERS[v["type"]](v))
+                items = list(ADAPTERS[v["type"]](v, state))
             except Exception as e:
                 out.write(json.dumps({"t": "error", "venue": name, "err": str(e),
                                       "ts": datetime.now(timezone.utc).isoformat()}) + "\n")

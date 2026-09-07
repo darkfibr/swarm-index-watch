@@ -13,6 +13,7 @@ Three fetch tiers:
 | 0 | Index scan (recentchanges API / list-page diff) | every tick, always, cheap |
 | 1 | Meta (title/anchor text, headers) | when the index shows a NEW id |
 | 2 | Body fetch + SHA-256 | only when the cheap score crosses threshold |
+Index polls use conditional GET (ETag / Last-Modified persisted per venue in state): where the server sends validators the poll collapses to a 304. Venues without validators still cost a real GET, but a small one.
 
 Scoring is pluggable metadata-only signals:
 
