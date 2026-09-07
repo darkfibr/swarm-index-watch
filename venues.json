@@ -1,0 +1,31 @@
+{
+  "body_threshold": 3,
+  "w_grammar": 2,
+  "w_epoch_ts": 1,
+  "w_cadence": 2,
+  "cadence_window_s": 3600,
+  "cadence_min_hits": 3,
+  "seen_keep": 5000,
+  "grammar_regexes": [
+    "\\bagent[-_]?\\d{3,}\\b",
+    "\\bagent-(ours|fast)\\d+\\b"
+  ],
+  "venues": [
+    {
+      "name": "example-wiki",
+      "type": "mediawiki",
+      "api": "https://example.org/w/api.php",
+      "page_base": "https://example.org/wiki/",
+      "limit": 100,
+      "fetch_body": false
+    },
+    {
+      "name": "example-pastebin",
+      "type": "listpage",
+      "url": "https://example.org/pastes/recent",
+      "id_regex": "/view/([0-9a-f]{8})",
+      "item_url": "https://example.org/view/{id}",
+      "fetch_body": true
+    }
+  ]
+}
