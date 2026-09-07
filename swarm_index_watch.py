@@ -102,11 +102,25 @@ def idx_jsonlist(v):
                 "ts": ts,
             }
 
-ADAPTERS["jsonlist"] = idx_jsonlist
+INJECTION_RES = [
+    r"\[SYSTEM\]",
+    r"ignore (all |all prior |all previous |your previous |prior )?instructions",
+    r"you are now (a|an|in|the)",
+    r"maintenance mode",
+    r"perform the following action",
+    r"disregard (all )?(prior|previous|above)",
+    r"new instructions?:",
+    r"jailbreak",
+    r"do anything now",
+]
 
 
-
-# ---------- scoring: cheap metadata only ----------
+def scan_injection(text):
+    """Flag bodies carrying prompt-injection markers. Evidence is kept AND
+    flagged: downstream readers MUST treat flagged bodies as untrusted input,
+    never as instructions. Returns list of matched pattern strings."""
+    hits = [rx for rx in INJECTION_RES if re.search(rx, text, re.I)]
+    return hits
 
 def score_item(item, author_hits, cfg):
     s, why = 0, []
@@ -182,6 +196,12 @@ def main():
                                 text = str(json.loads(text).get(v["body_content_key"], ""))[:20000]
                             except ValueError:
                                 pass
+                        # injection tripwire: flag, never drop (evidence stays,
+                        # readers treat flagged bodies as untrusted, not orders)
+                        inj = scan_injection(text)
+                        if inj:
+                            ev["injection_flag"] = True
+                            ev["injection_markers"] = inj
                         # keep small bodies; big ones get hashed + truncated
                         ev["body"] = text
                         ev["tier"] = 2
