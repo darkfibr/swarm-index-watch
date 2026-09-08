@@ -148,6 +148,94 @@ def scan_injection(text):
     hits = [rx for rx in INJECTION_RES if re.search(rx, text, re.I)]
     return hits
 
+
+ADAPTERS["jsonlist"] = idx_jsonlist  # registration dropped by 77c4cd0; restored
+
+
+# ---------- UseModWiki / ProWiki / Oddmuse: the CGI wikis that hosted the 2026 swarm ----------
+# These engines have no JSON API. RecentChanges is an HTML list:
+#   <p><strong>September 6, 2026</strong></p> <ul>
+#   <li><a href="...diff...">(diff)</a> <a href="wiki.pl?PageName">PageName</a> 16:59
+#       <strong>[summary]</strong> . . . . . AuthorOrIp</li>
+# ProWiki emits German date headers ("7. September 2026") and 24h times; UseMod
+# emits English headers and either "7:44 pm" or "16:59". Oddmuse uses the same
+# shape with extra markup. There is no revision id, so the item id is a hash of
+# (page, date, time, author) — stable across ticks, distinct per edit.
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    "january february march april may june july august september october november december".split())}
+_MONTHS.update({"märz": 3, "mai": 5, "juni": 6, "juli": 7, "oktober": 10, "dezember": 12})
+_RC_DATE_RE = re.compile(r"<strong>\s*(?:(\d{1,2})\.\s*)?([A-Za-zäÄ]+)\s+(\d{1,2})?,?\s*(\d{4})\s*</strong>", re.I)
+_RC_ROW_RE = re.compile(
+    r"<li>.*?\(diff\)</a>\s*<a href=['\"](?P<href>[^'\"]+)['\"][^>]*>(?P<page>[^<]+)</a>\s*"
+    r"(?P<time>\d{1,2}:\d{2}(?:\s*[ap]m)?)\s*(?P<rest>.*?)(?:</li>|(?=<li>)|(?=</ul>))", re.I | re.S)
+_RC_SUMMARY_RE = re.compile(r"<strong>\[(?P<s>.*?)\]</strong>", re.S)
+
+
+def _rc_date(m):
+    day = m.group(1) or m.group(3)
+    mon = _MONTHS.get(m.group(2).lower())
+    if not (day and mon):
+        return None
+    return int(m.group(4)), mon, int(day)
+
+
+def _rc_ts(date, t, utc_offset_h=0):
+    """These engines print server-local wall time (ProWiki: Vienna). Pass the
+    venue's utc_offset_h so ts is real UTC; default 0 keeps the naive reading."""
+    if not date:
+        return None
+    t = t.strip().lower()
+    hh, mm = t.replace("am", "").replace("pm", "").strip().split(":")
+    hh, mm = int(hh), int(mm)
+    if t.endswith("pm") and hh < 12:
+        hh += 12
+    if t.endswith("am") and hh == 12:
+        hh = 0
+    y, mo, d = date
+    return int(datetime(y, mo, d, hh, mm, tzinfo=timezone.utc).timestamp()) - int(utc_offset_h * 3600)
+
+
+def idx_usemod(v, state=None):
+    """UseModWiki / ProWiki / Oddmuse RecentChanges (action=rc). Read-only GET.
+    Config: url (the rc listing), optional page_base for item urls,
+    optional utc_offset_h (server-local clock offset, e.g. 2 for CEST)."""
+    data, _ = fetch(v["url"], vkey="idx:" + v.get("name", v["url"]), state=state)
+    if data is None:
+        return
+    text = data.decode("utf-8", "replace") if b"utf-8" in data[:2000].lower() \
+        else data.decode("latin-1")
+    date = None
+    pos = 0
+    events = [(m.start(), "d", m) for m in _RC_DATE_RE.finditer(text)]
+    events += [(m.start(), "r", m) for m in _RC_ROW_RE.finditer(text)]
+    for _, kind, m in sorted(events, key=lambda e: e[0]):
+        if kind == "d":
+            date = _rc_date(m)
+            continue
+        page = m.group("page").strip()
+        rest = m.group("rest")
+        sm = _RC_SUMMARY_RE.search(rest)
+        summary = re.sub(r"<[^>]+>", "", sm.group("s")).strip() if sm else ""
+        tail = re.sub(r"<[^>]+>", " ", rest)
+        tail = tail.split(". . .")[-1] if ". . ." in tail else tail
+        author = tail.strip().split()[-1] if tail.strip() else None
+        ts = _rc_ts(date, m.group("time"), v.get("utc_offset_h", 0))
+        key = f"{page}|{date}|{m.group('time').strip()}|{author}"
+        yield {
+            "id": "rc" + hashlib.sha1(key.encode()).hexdigest()[:12],
+            "author": author,
+            "title": f"{page} [{summary}]" if summary else page,
+            "url": (v.get("page_base") or "") + urllib.parse.quote(page, safe="/") if v.get("page_base") else None,
+            "ts": ts,
+        }
+
+
+ADAPTERS["usemod"] = idx_usemod
+
+
+
+# ---------- scoring: cheap metadata only ----------
+
 def score_item(item, author_hits, cfg):
     s, why = 0, []
     author = item.get("author") or ""
@@ -163,8 +251,10 @@ def score_item(item, author_hits, cfg):
         s += cfg.get("w_epoch_ts", 1)
         why.append("epoch-ts")
 
-    # cadence: same author hitting repeatedly inside the window
-    now = time.time()
+    # cadence: same author hitting repeatedly inside the window. Measured on the
+    # item's own timestamp when the venue gives one, so a first tick over a
+    # 30-day listing does not read all of history as "the last hour".
+    now = item.get("ts") or time.time()
     recent = [t for t in author_hits.get(author, []) if now - t < cfg.get("cadence_window_s", 3600)]
     if author and len(recent) >= cfg.get("cadence_min_hits", 3):
         s += cfg.get("w_cadence", 2)
@@ -239,7 +329,7 @@ def main():
                 out.write(json.dumps(ev) + "\n")
                 events += 1
                 if item.get("author"):
-                    state["authors"].setdefault(item["author"], []).append(time.time())
+                    state["authors"].setdefault(item["author"], []).append(item.get("ts") or time.time())
 
             cursor["seen"] = list(seen)[-cfg.get("seen_keep", 5000):]
 
