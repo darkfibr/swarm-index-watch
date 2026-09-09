@@ -329,7 +329,34 @@ def load_ip_watchlist(cfg, cfg_dir):
     return ips
 
 
-def score_item(item, author_hits, cfg):
+BENFORD = (0.3010, 0.1761, 0.1249, 0.0969, 0.0792,
+           0.0669, 0.0580, 0.0512, 0.0458)
+
+
+def benford_interval_score(stamps):
+    """ADD 2026-09-09: Benford automation score. Proposed by RNG in the
+    sprint room, shipped the same night. Fixed-cadence minting (e.g. the
+    May-12 57-gem ~1/sec matrix) collapses inter-arrival intervals onto one
+    leading digit; human irregularity spreads them. Run on INTERVALS, never
+    raw epochs (unix epochs all lead with 1). Returns chi-square vs Benford
+    (df=8; 15.5 ~= p0.05, 26.1 ~= p0.001) or None when too few intervals."""
+    ts = sorted(stamps)
+    iv = [b - a for a, b in zip(ts, ts[1:]) if b - a > 0]
+    if len(iv) < 9:
+        return None
+    obs = [0] * 9
+    for v in iv:
+        while v >= 10:
+            v /= 10.0
+        while v < 1:
+            v *= 10.0
+        obs[int(v) - 1] += 1
+    n = sum(obs)
+    if n < 9:
+        return None
+    return sum((o - n * e) ** 2 / (n * e) for o, e in zip(obs, BENFORD))
+
+
     s, why = 0, []
     author = item.get("author") or ""
     text = _item_text(item)
@@ -350,6 +377,15 @@ def score_item(item, author_hits, cfg):
     if author and len(recent) >= cfg.get("cadence_min_hits", 3):
         s += cfg.get("w_cadence", 2)
         why.append(f"cadence x{len(recent)}")
+    # benford: fixed-cadence automation fails the leading-digit test.
+    # N-floor (~20 stamps) keeps small authors out of the statistic; a longer
+    # cadence_window_s in venues.json gives this more history to chew on.
+    bh = author_hits.get(author, []) if author else []
+    if len(bh) >= cfg.get("benford_min_hits", 20):
+        chi2 = benford_interval_score(bh)
+        if chi2 is not None and chi2 >= cfg.get("benford_chi2_fire", 25.0):
+            s += cfg.get("w_benford", 2)
+            why.append(f"benford x2={chi2:.1f}")
 
     return s, why
 
