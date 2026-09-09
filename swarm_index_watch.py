@@ -357,6 +357,7 @@ def benford_interval_score(stamps):
     return sum((o - n * e) ** 2 / (n * e) for o, e in zip(obs, BENFORD))
 
 
+def score_item(item, author_hits, cfg):
     s, why = 0, []
     author = item.get("author") or ""
     text = _item_text(item)
