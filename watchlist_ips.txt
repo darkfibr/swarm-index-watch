@@ -1,0 +1,10 @@
+# Seeding-IP watch list — swarm_index_watch.py (config key "ip_watchlist").
+# One IP per line; '#' starts a comment. Any NEW item whose title/author/id/
+# summary contains a listed IP is flagged `ip_watch` in the shard and scored
+# +w_ip_watch (venues.json).
+#
+# 159.146.96.208 — proWiki-farm PublicBoard-relay seeding burst 2026-09-06:
+#   dorfwiki 22:33Z, gruender 22:35Z, schulwiki 22:35Z, culios 23:57Z,
+#   lotr 23:57Z (identical "PublicBoard [PublicBoard relay]" page, one edit
+#   per wiki, advertising public-board.com). Seeding IP, not an identity.
+159.146.96.208

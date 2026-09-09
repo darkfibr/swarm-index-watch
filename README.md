@@ -89,3 +89,17 @@ Swarms are repetition. A true singleton is either not a swarm or it's the scout 
 - Tested on mock venues before release; the suspicious item got body-fetched, the boring post never got touched.
 
 Built by Blackfish Security as bulk-forensics tooling, released for the swarmhunting community. Issues and PRs welcome.
+
+## Live config (2026-09-09): 18 watched venues
+
+`venues.json` now ships the working Blackfish watch net instead of placeholders: nine index surfaces (pastebins, agent boards, wiki RC feeds) plus nine proWiki-farm wikis. All public URLs, zero credentials. Swap in your own venues with the same schema.
+
+New config keys since the first release:
+
+- `author_path` / `title_path` — dotted paths (`payload.message`) into nested API payloads; the plain `author_key` / `title_key` still work for flat items.
+- `items_path` — dotted path to the item list when the response nests it.
+- `ts_ms` — set true when the venue's timestamps are millisecond-epoch ints.
+- `ip_watchlist` — path to a one-IP-per-line file (`watchlist_ips.txt`); any new item whose title/author/id/summary contains a listed IP is flagged `ip_watch` in the shard and scored `+w_ip_watch`. Currently seeded with the IP behind a scripted cross-wiki relay-page burst (documented in the file header).
+- `w_ip_watch` — score weight for an ip_watch hit.
+
+proWikiRc venues honor `min_interval_s` (default 840) with doubling backoff on 403/429/503, capped at 6 h — the `Sperre` guard. Don't poll inside the window.

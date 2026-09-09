@@ -103,6 +103,16 @@ def idx_listpage(v, state=None):
 
 ADAPTERS = {"mediawiki": idx_mediawiki, "listpage": idx_listpage}
 
+def _path(obj, dotted, default=None):
+    """Walk a dotted path (author.username) through nested dicts. FIX 2026-09-08: agentworkpad/thecolony nest author objects; score_item needs hashable strings."""
+    cur = obj
+    for part in str(dotted).split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return default
+    return cur
+
 def idx_jsonlist(v, state=None):
     """JSON list API (e.g. fragbin /api/pastes?page=N). Paginates v['pages'] pages.
     Field names configurable via id_key/title_key/ts_key."""
@@ -111,22 +121,163 @@ def idx_jsonlist(v, state=None):
                         vkey="idx:%s:p%d" % (v["name"], page), state=state)
         if data is None:
             continue
-        items = json.loads(data).get(v.get("items_key", "items"), [])
+        root = json.loads(data)
+        items = _path(root, v["items_path"], None) if v.get("items_path") else root.get(v.get("items_key", "items"), [])
         for it in items:
             ts = None
             raw_ts = it.get(v.get("ts_key", "")) if v.get("ts_key") else None
-            if raw_ts:
+            if isinstance(raw_ts, bool):
+                pass
+            elif isinstance(raw_ts, (int, float)):
+                # ADD 2026-09-09: some venues (openagentforum) emit ms epochs;
+                # `ts_ms: true` normalises to the seconds convention used by
+                # every other adapter's shard rows.
+                ts = int(raw_ts / 1000) if v.get("ts_ms") else int(raw_ts)
+            elif raw_ts:
                 try:
                     ts = int(datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00")).timestamp())
                 except ValueError:
                     pass
             yield {
                 "id": str(it.get(v.get("id_key", "id"))),
-                "author": it.get(v.get("author_key", "")),
-                "title": it.get(v.get("title_key", "title")),
+                "author": _path(it, v["author_path"], None) if v.get("author_path") else it.get(v.get("author_key", "")),
+                # ADD 2026-09-09: `title_path` allows nested title fields
+                # (openagentforum payload.message); title_key stays flat for
+                # every pre-existing venue.
+                "title": _path(it, v["title_path"], None) if v.get("title_path") else it.get(v.get("title_key", "title")),
                 "url": v["item_url"].format(id=it.get(v.get("id_key", "id"))) if v.get("item_url") else None,
                 "ts": ts,
             }
+
+# ---------- ProWiki (wikiservice.at farm) recent-changes adapter ----------
+# Added 2026-09-08 for the attribution watch (probier + dse venues).
+# Surface: <wiki>/wiki.cgi?action=rc — 30-day recent-changes list, one GET.
+# Row shape: page | local HH:MM | [summary] | (N Änderungen) | actor (user or IP).
+# No byte-delta and no revid exist on this surface; the event key is
+# page+minute+actor, and the `from=` anchor gives the top row's exact epoch.
+PROWIKI_MONTHS = {
+    "januar": 1, "februar": 2, "m\u00e4rz": 3, "maerz": 3, "april": 4, "mai": 5,
+    "juni": 6, "juli": 7, "august": 8, "september": 9, "oktober": 10,
+    "november": 11, "dezember": 12, "january": 1, "february": 2, "march": 3,
+    "may": 5, "june": 6, "july": 7, "october": 10, "december": 12,
+}
+PROWIKI_DATE_RE = re.compile(
+    r"<p><strong>(?:(\d{1,2})\.\s+([A-Za-z\u00c0-\u024f]+)\s+(\d{4})"
+    r"|([A-Za-z\u00c0-\u024f]+)\s+(\d{1,2}),\s+(\d{4}))</strong></p>")
+PROWIKI_ROW_RE = re.compile(
+    r"<li>.*?<a href='wiki\.cgi\?((?!action=)[^']+)' class='body'>([^<]+)</a>\s+(\d{1,2}):(\d{2})")
+PROWIKI_ACT_RE = re.compile(r"<a href='wiki\.cgi\?[^']*' class='body'>([^<]+)</a>\s*</li>")
+PROWIKI_IP_RE = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
+PROWIKI_SUM_RE = re.compile(r"<strong>(.*?)</strong>")
+PROWIKI_CNT_RE = re.compile(r"\((\d+)\s+(?:\u00c4nderungen|Aenderungen|changes)\)")
+PROWIKI_FROM_RE = re.compile(r"[?&]from=(\d{9,11})")
+PROWIKI_SPERRE_RE = re.compile(r"Zugriffs?rate ist zu hoch|ProbierWiki: Sperre", re.I)
+
+
+def _prowiki_backoff(st, reason, now, cap):
+    """Park a venue in state.json instead of hammering a rate-limiting wiki."""
+    n = st.get("sperre_count", 0) + 1
+    wait = min(cap, 1800 * (2 ** (n - 1)))
+    st["sperre_count"] = n
+    st["sperre_until"] = now + wait
+    st["last_sperre_ts"] = now
+    st["last_sperre_reason"] = reason
+    print("%s prowiki backoff #%d (%s): venue parked %ds" % (
+        datetime.now(timezone.utc).isoformat(), n, reason, wait))
+
+
+def _prowiki_ts_chain(rows, anchor):
+    """UTC epochs for every row. The `from=` anchor pins the top row's exact
+    (second-precision) epoch; the rest chain on displayed HH:MM deltas, so a
+    DST flip inside the 30-day window stays correct."""
+    out, prev_naive, prev_ts = [], None, None
+    for r in rows:
+        naive = int(datetime(*r["date"], tzinfo=timezone.utc).timestamp())
+        ts = anchor if prev_naive is None else prev_ts - (prev_naive - naive)
+        out.append(ts)
+        prev_naive, prev_ts = naive, ts
+    return out
+
+
+def idx_prowiki_rc(v, state=None):
+    """ProWiki action=rc index. ONE GET per tick, never a body fetch.
+    Rate-limit doctrine: 14-min floor between fetches (min_interval_s), and a
+    Sperre page or HTTP 403/429/503 parks the venue (30 min doubling to cap)."""
+    name = v["name"]
+    st = state["venues"].setdefault(name, {"seen": []}) if state is not None else {}
+    now = time.time()
+    if st.get("sperre_until", 0) > now:
+        return
+    if now - st.get("last_fetch_ts", 0) < v.get("min_interval_s", 840):
+        return
+    st["last_fetch_ts"] = now
+    try:
+        data, _ = fetch(v["url"], vkey="idx:" + name, state=state)
+    except urllib.error.HTTPError as e:
+        if e.code in (403, 429, 503):
+            _prowiki_backoff(st, "http %d" % e.code, now, v.get("backoff_cap_s", 21600))
+            return
+        raise
+    if data is None:
+        return
+    if PROWIKI_SPERRE_RE.search(data.decode("latin-1", "replace")[:4000]):
+        _prowiki_backoff(st, "sperre-page", now, v.get("backoff_cap_s", 21600))
+        return
+    st["sperre_count"] = 0
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = data.decode("latin-1")
+
+    rows, cur = [], None
+    for line in text.splitlines():
+        d = PROWIKI_DATE_RE.search(line)
+        if d:
+            if d.group(1):
+                cur = (int(d.group(3)), PROWIKI_MONTHS.get(d.group(2).lower()), int(d.group(1)))
+            else:
+                cur = (int(d.group(6)), PROWIKI_MONTHS.get(d.group(4).lower()), int(d.group(5)))
+            continue
+        m = PROWIKI_ROW_RE.search(line)
+        if not m or not cur or not cur[1]:
+            continue
+        tail = line[m.end():]
+        act = PROWIKI_ACT_RE.search(tail)
+        ip = PROWIKI_IP_RE.search(tail)
+        sm = PROWIKI_SUM_RE.search(tail)
+        cn = PROWIKI_CNT_RE.search(tail)
+        rows.append({
+            "page": m.group(1).replace("&amp;", "&"),
+            "date": cur, "hh": int(m.group(3)), "mm": int(m.group(4)),
+            "actor": act.group(1) if act else (ip.group(1) if ip else None),
+            "actor_kind": "user" if act else ("ip" if ip else None),
+            "summary": re.sub(r"\s+", " ", sm.group(1)).strip("[] ") if sm else None,
+            "changes": int(cn.group(1)) if cn else 1,
+        })
+
+    anchor = PROWIKI_FROM_RE.search(text)
+    if anchor:
+        ts_list = _prowiki_ts_chain(rows, int(anchor.group(1)))
+    else:
+        off = v.get("tz_offset_s", 7200)
+        ts_list = [int(datetime(*r["date"], r["hh"], r["mm"],
+                                tzinfo=timezone.utc).timestamp()) - off for r in rows]
+
+    base = v.get("page_base", "")
+    for r, ts in zip(rows, ts_list):
+        stamp = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y%m%dT%H%M")
+        yield {
+            "id": "%s|%s|%s" % (r["page"], stamp, r["actor"] or "-"),
+            "author": r["actor"],
+            "title": r["page"] + ((" [%s]" % r["summary"]) if r["summary"] else ""),
+            "url": base + urllib.parse.quote(r["page"], safe="/") if base else None,
+            "ts": ts,
+            "page": r["page"],
+            "summary": r["summary"],
+            "changes": r["changes"],
+            "actor_kind": r["actor_kind"],
+        }
+
 
 INJECTION_RES = [
     r"\[SYSTEM\]",
@@ -141,6 +292,8 @@ INJECTION_RES = [
 ]
 
 
+ADAPTERS["jsonlist"] = idx_jsonlist  # FIX 2026-09-08: register jsonlist adapter (fragbin blind 74 ticks)
+ADAPTERS["proWikiRc"] = idx_prowiki_rc  # ADD 2026-09-08: wikiservice.at probier + dse venues
 def scan_injection(text):
     """Flag bodies carrying prompt-injection markers. Evidence is kept AND
     flagged: downstream readers MUST treat flagged bodies as untrusted input,
@@ -148,10 +301,38 @@ def scan_injection(text):
     hits = [rx for rx in INJECTION_RES if re.search(rx, text, re.I)]
     return hits
 
+def _item_text(item):
+    """Flat text blob the scorer and the seeding-IP watchlist both scan."""
+    return " ".join(str(x) for x in (item.get("title"), item.get("author"),
+                                     item.get("id"), item.get("summary")) if x)
+
+
+def load_ip_watchlist(cfg, cfg_dir):
+    """Seeding-IP watch list (ADD 2026-09-09): one IP per line, '#' comments,
+    path relative to the config dir. Items whose text carries a listed IP are
+    flagged `ip_watch` and scored +w_ip_watch. Missing/unreadable file is a
+    no-op, never a tick failure."""
+    path = cfg.get("ip_watchlist")
+    if not path:
+        return set()
+    if not os.path.isabs(path):
+        path = os.path.join(cfg_dir, path)
+    ips = set()
+    try:
+        with open(path) as f:
+            for ln in f:
+                ln = ln.split("#", 1)[0].strip()
+                if ln:
+                    ips.add(ln)
+    except OSError as e:
+        print("ip watchlist unreadable (%s): %s" % (path, e))
+    return ips
+
+
 def score_item(item, author_hits, cfg):
     s, why = 0, []
     author = item.get("author") or ""
-    text = " ".join(str(x) for x in (item.get("title"), author, item.get("id")) if x)
+    text = _item_text(item)
 
     for rx in cfg.get("grammar_regexes", []):
         if re.search(rx, text, re.I):
@@ -182,6 +363,7 @@ def main():
     a = ap.parse_args()
 
     cfg = json.load(open(a.config))
+    ip_watch = load_ip_watchlist(cfg, os.path.dirname(os.path.abspath(a.config)))
     state_path = os.path.join(a.dir, "state.json")
     state = json.load(open(state_path)) if os.path.exists(state_path) else {"venues": {}, "authors": {}}
     os.makedirs(os.path.join(a.dir, "shards"), exist_ok=True)
@@ -189,6 +371,7 @@ def main():
 
     body_thr = cfg.get("body_threshold", 3)
     events = 0
+    errors = 0
 
     with open(shard, "a") as out:
         for v in cfg["venues"]:
@@ -200,6 +383,7 @@ def main():
             except Exception as e:
                 out.write(json.dumps({"t": "error", "venue": name, "err": str(e),
                                       "ts": datetime.now(timezone.utc).isoformat()}) + "\n")
+                errors += 1
                 continue
 
             for item in items:
@@ -207,8 +391,14 @@ def main():
                     continue
                 seen.add(item["id"])
                 s, why = score_item(item, state["authors"], cfg)
+                hits = sorted(ip for ip in ip_watch if ip in _item_text(item))
+                if hits:
+                    s += cfg.get("w_ip_watch", 2)
+                    why = why + ["ip_watch:" + ",".join(hits)]
                 ev = {"t": "new", "venue": name, "score": s, "why": why,
                       "ts": datetime.now(timezone.utc).isoformat(), **item}
+                if hits:
+                    ev["ip_watch"] = hits
 
                 # tier 2: body fetch only when the cheap score says so
                 if s >= body_thr and item.get("url") and v.get("fetch_body", True):
@@ -251,7 +441,8 @@ def main():
             del state["authors"][k]
 
     json.dump(state, open(state_path, "w"))
-    print(f"{datetime.now(timezone.utc).isoformat()} tick ok: {events} new items -> {shard}")
+    status = f"tick ok: {events} new items" if not errors else f"tick DEGRADED: {events} new items, {errors} venue errors"
+    print(f"{datetime.now(timezone.utc).isoformat()} {status} -> {shard}")
 
 
 if __name__ == "__main__":
