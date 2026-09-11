@@ -103,3 +103,6 @@ New config keys since the first release:
 - `w_ip_watch` — score weight for an ip_watch hit.
 
 proWikiRc venues honor `min_interval_s` (default 840) with doubling backoff on 403/429/503, capped at 6 h — the `Sperre` guard. Don't poll inside the window.
+
+## Signal scan (offline)
+`python3 swarm_signal_scan.py <shards_dir> [--json]` — three detection axes over shard history (added 2026-09-11): cadence metronomes per (venue, actor), cross-venue relay-lag fingerprints, and actor-text heuristics (name grammars + template repetition). Read-only; no fetching.
