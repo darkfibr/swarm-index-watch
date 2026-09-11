@@ -1,26 +1,4 @@
 {
-  "body_threshold": 3,
-  "w_grammar": 2,
-  "w_epoch_ts": 1,
-  "w_cadence": 2,
-  "w_ip_watch": 2,
-  "cadence_window_s": 3600,
-  "cadence_min_hits": 3,
-  "seen_keep": 8000,
-  "ip_watchlist": "watchlist_ips.txt",
-  "grammar_regexes": [
-    "\\bagent[-_]?\\d{2,}\\b",
-    "\\bagent[-_](ours|fast)\\d+\\b",
-    "\\b(ours|fast)\\d{3,}\\b",
-    "\\bnsi reference\\b",
-    "\\becdc\\b.*\\beu\\b",
-    "\\bsalted_\\w+",
-    "\\bagent_[0-9a-f]{16}\\b",
-    "\\[PRES\\] cycle check-in \\d+",
-    "\\bPublicBoard relay\\b",
-    "\\bAuthorized public editability test\\b",
-    "\\bOpenAgentChat\\b"
-  ],
   "venues": [
     {
       "name": "k4be",
@@ -217,6 +195,71 @@
       "trial": "2026-09-09",
       "url": "https://www.schulwiki.org/wiki.cgi?action=rc",
       "page_base": "https://www.schulwiki.org/wiki.cgi?",
+      "fetch_body": false,
+      "min_interval_s": 840,
+      "tz_offset_s": 7200,
+      "backoff_cap_s": 21600
+    },
+    {
+      "name": "probyte",
+      "type": "listpage",
+      "trial": "2026-09-10",
+      "url": "https://paste.probyte.ee/lists",
+      "id_regex": "view/([0-9a-f]{8})",
+      "item_url": "https://paste.probyte.ee/view/{id}",
+      "fetch_body": true
+    },
+    {
+      "name": "annafyi",
+      "type": "listpage",
+      "trial": "2026-09-10",
+      "url": "https://anna.fyi/lists",
+      "id_regex": "view/([0-9a-f]{8})",
+      "item_url": "https://anna.fyi/view/{id}",
+      "fetch_body": true
+    },
+    {
+      "name": "fasterit",
+      "type": "listpage",
+      "trial": "2026-09-10",
+      "url": "https://pastebin.faster-it.de/lists",
+      "id_regex": "view/([0-9a-f]{8})",
+      "item_url": "https://pastebin.faster-it.de/view/{id}",
+      "fetch_body": true
+    },
+    {
+      "name": "tarcseh",
+      "type": "listpage",
+      "trial": "2026-09-10",
+      "url": "https://pastebin.tarcseh.me/lists",
+      "id_regex": "view/([0-9a-f]{8})",
+      "item_url": "https://pastebin.tarcseh.me/view/{id}",
+      "fetch_body": true
+    },
+    {
+      "name": "dynavirt",
+      "type": "listpage",
+      "trial": "2026-09-10",
+      "url": "https://pb.dynavirt.com/lists",
+      "id_regex": "view/([0-9a-f]{8})",
+      "item_url": "https://pb.dynavirt.com/view/{id}",
+      "fetch_body": true
+    },
+    {
+      "name": "smirky",
+      "type": "listpage",
+      "trial": "2026-09-10",
+      "url": "https://paste.smirky.net/lists",
+      "id_regex": "view/([0-9a-f]{8})",
+      "item_url": "https://paste.smirky.net/view/{id}",
+      "fetch_body": true
+    },
+    {
+      "name": "fractal",
+      "type": "proWikiRc",
+      "trial": "2026-09-10",
+      "url": "https://www.wikiservice.at/fractal/wiki.cgi?action=rc",
+      "page_base": "https://www.wikiservice.at/fractal/wiki.cgi?",
       "fetch_body": false,
       "min_interval_s": 840,
       "tz_offset_s": 7200,
