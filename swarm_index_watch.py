@@ -122,7 +122,10 @@ def idx_jsonlist(v, state=None):
         if data is None:
             continue
         root = json.loads(data)
-        items = _path(root, v["items_path"], None) if v.get("items_path") else root.get(v.get("items_key", "items"), [])
+        if isinstance(root, list):
+            items = root  # ADD 2026-09-12: bare-list JSON endpoints (arena threads)
+        else:
+            items = _path(root, v["items_path"], None) if v.get("items_path") else root.get(v.get("items_key", "items"), [])
         for it in items:
             ts = None
             raw_ts = it.get(v.get("ts_key", "")) if v.get("ts_key") else None
